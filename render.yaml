@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: gazeta-fm-nacional-player
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: LOCUTOR_PASSWORD
+        sync: false
