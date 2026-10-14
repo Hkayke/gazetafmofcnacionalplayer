@@ -2,14 +2,15 @@ services:
   - type: web
     name: gazeta-fm-nacional-player
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: LOCUTOR_PASSWORD
+      - key: NODE_VERSION
+        value: 20
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
         sync: false
-      - key: RADIO_STREAM_URL
-        sync: false
-      - key: ICECAST_STATUS_URL
-        sync: false
-      - key: AUTO_DJ_ENABLED
-        value: "true"
