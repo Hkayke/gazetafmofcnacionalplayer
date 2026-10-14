@@ -13,8 +13,9 @@ let bibliotecaMusicas = [];
 let indiceMusica = 0;
 let streamingAoVivo = false;
 let fluxoAutoDJAtivo = false;
-let radioSettings={streamUrl:process.env.RADIO_STREAM_URL||'', autoDjEnabled:process.env.AUTO_DJ_ENABLED!=='false', nowPlaying:'Programação automática'};
+let radioSettings={streamUrl:process.env.RADIO_STREAM_URL||'/radio.mp3', autoDjEnabled:process.env.AUTO_DJ_ENABLED!=='false', nowPlaying:'Programação automática'};
 try { const saved=JSON.parse(fs.readFileSync(SETTINGS_FILE,'utf8')); radioSettings={...radioSettings,...saved}; } catch (_) {}
+if (!radioSettings.streamUrl) radioSettings.streamUrl='/radio.mp3';
 function saveRadioSettings(){ try { fs.writeFileSync(SETTINGS_FILE,JSON.stringify(radioSettings,null,2)); } catch(e) { console.warn('Não foi possível salvar configurações:',e.message); } }
 app.use(express.json({limit:'100kb'}));app.use(express.static(path.join(__dirname,'public')));
 
@@ -41,19 +42,31 @@ function processarAutoDJ() {
 app.get('/radio.mp3',(req,res)=>{
  res.writeHead(200,{'Content-Type':'audio/mpeg','Transfer-Encoding':'chunked','Connection':'keep-alive','Cache-Control':'no-cache, no-store, must-revalidate','Pragma':'no-cache','Expires':'0'});
  ouvintesAtivos.push(res);
- req.on('close',()=>{ouvintesAtivos=ouvintesAtivos.filter(ouvinte=>ouvinte!==res);});
+ // A resposta de streaming fica aberta; remova o ouvinte quando a RESPOSTA fechar.
+ res.on('close',()=>{ouvintesAtivos=ouvintesAtivos.filter(ouvinte=>ouvinte!==res);});
 });
 app.get('/health',(_,r)=>r.json({ok:true}));
 app.get('/api/radio-config',(_,r)=>r.json({streamUrl:radioSettings.streamUrl,autoDjEnabled:radioSettings.autoDjEnabled,nowPlaying:radioSettings.nowPlaying,live,hostName}));
 app.post('/api/radio-config',(req,res)=>{ if(req.body?.password!==PASSWORD)return res.status(403).json({error:'Senha incorreta.'});
- const streamUrl=String(req.body.streamUrl||'').trim();
- if(streamUrl && !/^https?:\/\//i.test(streamUrl)) return res.status(400).json({error:'O endereço do stream precisa começar com http:// ou https://.'});
+ const streamUrl=String(req.body.streamUrl||'/radio.mp3').trim() || '/radio.mp3';
+ if(streamUrl && streamUrl !== '/radio.mp3' && !/^https?:\/\//i.test(streamUrl)) return res.status(400).json({error:'Use /radio.mp3 ou um endereço começando com http:// ou https://.'});
  radioSettings.streamUrl=streamUrl; radioSettings.autoDjEnabled=!!req.body.autoDjEnabled;
  if(radioSettings.autoDjEnabled) processarAutoDJ();
  saveRadioSettings(); io.emit('radio-config', {streamUrl:radioSettings.streamUrl,autoDjEnabled:radioSettings.autoDjEnabled,nowPlaying:radioSettings.nowPlaying});
  res.json({ok:true,settings:{streamUrl:radioSettings.streamUrl,autoDjEnabled:radioSettings.autoDjEnabled,nowPlaying:radioSettings.nowPlaying}});
 });
 app.post('/api/upload-song',upload.single('song'),(req,res)=>{if(!req.file)return res.status(400).json({error:'Selecione um arquivo.'});const ext=path.extname(req.file.originalname).slice(0,10);const name=req.file.filename+ext;fs.renameSync(req.file.path,path.join(uploadsDir,name));const item={id:name,name:req.file.originalname,url:'/uploads/'+name,by:String(req.body.name||'Ouvinte').slice(0,40),at:Date.now()};requestHistory.push(item);requestHistory=requestHistory.slice(-100);io.emit('song-request',item);res.json({ok:true,item});});
+app.post('/api/auto-dj/upload', upload.single('song'), (req,res)=>{
+ if(req.body.password!==PASSWORD){ if(req.file) try{fs.unlinkSync(req.file.path)}catch(_){}; return res.status(403).json({error:'Senha incorreta.'}); }
+ if(!req.file) return res.status(400).json({error:'Selecione um arquivo MP3.'});
+ const original=path.basename(req.file.originalname||'musica.mp3');
+ if(path.extname(original).toLowerCase()!=='.mp3'){ try{fs.unlinkSync(req.file.path)}catch(_){}; return res.status(400).json({error:'O Auto DJ aceita arquivos MP3.'}); }
+ const safeBase=original.replace(/[^a-zA-Z0-9._ -]/g,'_').replace(/\s+/g,' ').slice(0,100) || 'musica.mp3';
+ const finalName=Date.now()+'-'+safeBase;
+ const destination=path.join(__dirname,'public',finalName);
+ try { fs.renameSync(req.file.path,destination); atualizarMusicas(); if(!fluxoAutoDJAtivo) processarAutoDJ(); res.json({ok:true,name:finalName,count:bibliotecaMusicas.length}); }
+ catch(e){ console.error('[AutoDJ] Falha ao salvar música:',e); res.status(500).json({error:'Não foi possível salvar a música no servidor.'}); }
+});
 app.post('/api/upload-schedule',upload.single('image'),(req,res)=>{if(!req.file)return res.status(400).json({error:'Selecione uma imagem.'});if(req.body.password!==PASSWORD){fs.unlinkSync(req.file.path);return res.status(403).json({error:'Senha incorreta.'});}const ext=path.extname(req.file.originalname).slice(0,10)||'.jpg';const name='programacao-'+Date.now()+ext;fs.renameSync(req.file.path,path.join(uploadsDir,name));const item={url:'/uploads/'+name,name:req.file.originalname,at:Date.now()};scheduleImage=item;io.emit('schedule-image',item);res.json({ok:true,item});});
 let scheduleImage=null, chatHistory=[], requestHistory=[];app.get('/api/public-data',(_,res)=>res.json({scheduleImage,chatHistory:chatHistory.slice(-60),requestHistory:requestHistory.slice(-30)}));
 let hostId=null,hostName='',live=false; const listeners=new Set();
