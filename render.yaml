@@ -7,3 +7,9 @@ services:
     envVars:
       - key: LOCUTOR_PASSWORD
         sync: false
+      - key: RADIO_STREAM_URL
+        sync: false
+      - key: ICECAST_STATUS_URL
+        sync: false
+      - key: AUTO_DJ_ENABLED
+        value: "true"
