@@ -1,6 +1,6 @@
 const socket = io({ reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 800, reconnectionDelayMax: 5000 });
 const $ = id => document.getElementById(id);
-let isLive = false, hostMode = false, hostName = '', hostPassword = '', intendedLive = false, listenerMode = false, radioConfig = {streamUrl:'',autoDjEnabled:true,nowPlaying:'Programação automática'};
+let isLive = false, hostMode = false, hostName = '', hostPassword = '', intendedLive = false, listenerMode = false, radioConfig = {streamUrl:'/radio.mp3',autoDjEnabled:true,nowPlaying:'Programação automática'};
 let micStream = null, audioContext = null, mixDestination = null, micSource = null;
 let micGain = null, musicGain = null, effectGain = null, masterGain = null, compressor = null, micFilter = null;
 let musicAnalyser = null, voiceAnalyser = null, effectAnalyser = null, musicMonitorGain = null, musicIndex = -1, currentMusicAudio = null, currentMusicSource = null;
@@ -17,7 +17,7 @@ function state(s) {
   $('goLiveBtn').disabled = isLive;
   $('offLiveBtn').disabled = !isLive;
 }
-socket.on('radio-state', s => { state(s); if (listenerMode && s.live && !radioConfig.autoDjEnabled) socket.emit('listener-join'); });
+socket.on('radio-state', s => { state(s); if (listenerMode) applyRadioConfig({}); });
 function applyRadioConfig(c) {
   radioConfig={...radioConfig,...c};
   const title=radioConfig.nowPlaying || 'Programação automática';
@@ -27,10 +27,10 @@ function applyRadioConfig(c) {
   if ($('autoDjToggle')) $('autoDjToggle').checked=!!radioConfig.autoDjEnabled;
   if ($('autoDjMessage')) $('autoDjMessage').textContent=radioConfig.streamUrl ? (radioConfig.autoDjEnabled?'Auto DJ ativado. O stream está configurado.':'Auto DJ desligado; locutores ao vivo têm prioridade.') : 'Informe a URL pública do stream Icecast para habilitar a programação 24h.';
   if (listenerMode && $('autoDjAudio')) {
-    if (radioConfig.autoDjEnabled && radioConfig.streamUrl) {
-      const a=$('autoDjAudio'); if (a.src!==radioConfig.streamUrl) a.src=radioConfig.streamUrl;
+    if (!isLive && radioConfig.autoDjEnabled && radioConfig.streamUrl) {
+      const a=$('autoDjAudio'); const streamSrc=new URL(radioConfig.streamUrl,window.location.href).href; if (a.src!==streamSrc) a.src=streamSrc;
       a.play().then(()=>{$('listenHint').textContent='Conectado à programação automática 24h.';}).catch(()=>{$('listenHint').textContent='Toque em “Ouvir rádio” para iniciar o áudio.';});
-    } else { $('autoDjAudio').pause(); if (isLive) socket.emit('listener-join'); }
+    } else { $('autoDjAudio').pause(); if (isLive) socket.emit('listener-join'); else if (!radioConfig.autoDjEnabled) $('listenHint').textContent='A rádio está offline. Ative o Auto DJ ou aguarde um locutor.'; }
   }
 }
 socket.on('radio-config', applyRadioConfig);
@@ -87,13 +87,16 @@ $('loginBtn').onclick = () => { hostName = $('hostName').value.trim() || 'Locuto
 $('logoutBtn').onclick = async () => { await endLive(); hostMode = false; hostPassword = ''; $('controlView').classList.add('hidden'); $('loginView').classList.remove('hidden'); };
 $('listenBtn').onclick = async () => {
   listenerMode = true;
-  if (radioConfig.autoDjEnabled && radioConfig.streamUrl) {
-    const a=$('autoDjAudio'); if(a.src!==radioConfig.streamUrl) a.src=radioConfig.streamUrl;
-    try { await a.play(); $('listenHint').textContent='Você está ouvindo a programação automática 24h.'; }
-    catch (_) { $('listenHint').textContent='Não foi possível iniciar o stream. Confira a URL e tente novamente.'; }
-  } else {
+  if (isLive) {
+    $('autoDjAudio').pause();
     $('listenHint').textContent = 'Conectando à transmissão ao vivo…';
     $('remoteAudio').play().catch(() => {}); socket.emit('listener-join');
+  } else if (radioConfig.autoDjEnabled && radioConfig.streamUrl) {
+    const a=$('autoDjAudio'); const streamSrc=new URL(radioConfig.streamUrl,window.location.href).href; if(a.src!==streamSrc) a.src=streamSrc;
+    try { await a.play(); $('listenHint').textContent='Você está ouvindo a programação automática.'; }
+    catch (_) { $('listenHint').textContent='Não foi possível iniciar o stream. Confira se há músicas no Auto DJ e tente novamente.'; }
+  } else {
+    $('listenHint').textContent = 'A rádio está offline. Aguarde um locutor entrar ao vivo ou ative o Auto DJ.';
   }
 };
 $('saveRadioConfig').onclick = async () => {
@@ -243,5 +246,18 @@ $('chatForm').onsubmit=e=>{e.preventDefault();const text=$('chatText').value.tri
 $('requestForm').onsubmit=async e=>{e.preventDefault();const file=$('requestFile').files[0];if(!file)return;const msg=$('requestMessage');msg.textContent='Enviando arquivo…';try{const fd=new FormData();fd.append('song',file);fd.append('name',$('requestName').value.trim()||'Ouvinte');const r=await fetch('/api/upload-song',{method:'POST',body:fd});const data=await r.json();if(!r.ok)throw new Error(data.error||'Falha no envio');msg.textContent='Pedido enviado! O locutor já pode baixar o arquivo.';$('requestFile').value='';}catch(err){msg.textContent='Não foi possível enviar: '+err.message;}};
 $('scheduleFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;const msg=$('scheduleUploadMessage');if(!hostMode||!hostPassword){msg.textContent='Somente o administrador autenticado no painel pode publicar a programação.';e.target.value='';return;}msg.textContent='Enviando imagem…';try{const fd=new FormData();fd.append('password',hostPassword);fd.append('image',file);const r=await fetch('/api/upload-schedule',{method:'POST',body:fd});const data=await r.json();if(!r.ok)throw new Error(data.error||'Falha no envio');setSchedule(data.item);msg.textContent='Imagem publicada para os ouvintes.';}catch(err){msg.textContent='Não foi possível publicar: '+err.message;}e.target.value='';};
 fetch('/api/public-data').then(r=>r.json()).then(data=>{(data.chatHistory||[]).forEach(addChatMessage);(data.requestHistory||[]).forEach(m=>{const already=document.querySelector('[data-request-id="'+CSS.escape(m.id)+'"]');if(!already){const box=$('hostRequests');if(box.querySelector('.empty'))box.innerHTML='';const row=document.createElement('div');row.className='file-row';row.dataset.requestId=m.id;const n=document.createElement('span');n.className='file-name';n.textContent=m.by+' pediu: '+m.name;const a=document.createElement('a');a.href=m.url;a.download=m.name;a.className='request-download';a.textContent='Baixar';row.append(n,a);box.append(row);}});if(data.scheduleImage)setSchedule(data.scheduleImage);}).catch(()=>{});
+
+const autoDjUploadInput = $('autoDjSongFile');
+if (autoDjUploadInput) autoDjUploadInput.onchange = async e => {
+  const file=e.target.files[0]; if(!file)return;
+  const msg=$('autoDjUploadMessage');
+  if(!hostMode || !hostPassword){msg.textContent='Entre no painel do locutor antes de enviar músicas para o Auto DJ.';e.target.value='';return;}
+  if(!/\.mp3$/i.test(file.name)){msg.textContent='Selecione um arquivo MP3.';e.target.value='';return;}
+  msg.textContent='Enviando música para o servidor…';
+  try { const fd=new FormData(); fd.append('password',hostPassword); fd.append('song',file); const r=await fetch('/api/auto-dj/upload',{method:'POST',body:fd}); const d=await r.json(); if(!r.ok)throw new Error(d.error||'Falha no envio'); msg.textContent='Música adicionada à programação automática. Total de faixas: '+d.count+'.'; }
+  catch(err){msg.textContent='Não foi possível enviar: '+err.message;}
+  e.target.value='';
+};
+
 const originalLoginHandler = $('loginBtn').onclick;
 $('loginBtn').onclick = async () => { hostPassword=$('hostPassword').value; hostName=$('hostName').value.trim()||'Locutor'; if(originalLoginHandler) await originalLoginHandler(); };
