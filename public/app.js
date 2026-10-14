@@ -1,6 +1,6 @@
 const socket = io({ reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 800, reconnectionDelayMax: 5000 });
 const $ = id => document.getElementById(id);
-let isLive = false, hostMode = false, hostName = '', hostPassword = '', intendedLive = false, listenerMode = false;
+let isLive = false, hostMode = false, hostName = '', hostPassword = '', intendedLive = false, listenerMode = false, radioConfig = {streamUrl:'',autoDjEnabled:true,nowPlaying:'Programação automática'};
 let micStream = null, audioContext = null, mixDestination = null, micSource = null;
 let micGain = null, musicGain = null, effectGain = null, masterGain = null, compressor = null, micFilter = null;
 let musicAnalyser = null, voiceAnalyser = null, effectAnalyser = null, musicMonitorGain = null, musicIndex = -1, currentMusicAudio = null, currentMusicSource = null;
@@ -17,7 +17,24 @@ function state(s) {
   $('goLiveBtn').disabled = isLive;
   $('offLiveBtn').disabled = !isLive;
 }
-socket.on('radio-state', s => { state(s); if (listenerMode && s.live) socket.emit('listener-join'); });
+socket.on('radio-state', s => { state(s); if (listenerMode && s.live && !radioConfig.autoDjEnabled) socket.emit('listener-join'); });
+function applyRadioConfig(c) {
+  radioConfig={...radioConfig,...c};
+  const title=radioConfig.nowPlaying || 'Programação automática';
+  if ($('trackTitle') && (!isLive || radioConfig.autoDjEnabled)) $('trackTitle').textContent=title;
+  if ($('trackSub')) $('trackSub').textContent=radioConfig.autoDjEnabled ? 'Auto DJ • programação contínua' : (isLive?'Transmissão ao vivo':'Aguardando locutor');
+  if ($('streamUrlInput')) $('streamUrlInput').value=radioConfig.streamUrl||'';
+  if ($('autoDjToggle')) $('autoDjToggle').checked=!!radioConfig.autoDjEnabled;
+  if ($('autoDjMessage')) $('autoDjMessage').textContent=radioConfig.streamUrl ? (radioConfig.autoDjEnabled?'Auto DJ ativado. O stream está configurado.':'Auto DJ desligado; locutores ao vivo têm prioridade.') : 'Informe a URL pública do stream Icecast para habilitar a programação 24h.';
+  if (listenerMode && $('autoDjAudio')) {
+    if (radioConfig.autoDjEnabled && radioConfig.streamUrl) {
+      const a=$('autoDjAudio'); if (a.src!==radioConfig.streamUrl) a.src=radioConfig.streamUrl;
+      a.play().then(()=>{$('listenHint').textContent='Conectado à programação automática 24h.';}).catch(()=>{$('listenHint').textContent='Toque em “Ouvir rádio” para iniciar o áudio.';});
+    } else { $('autoDjAudio').pause(); if (isLive) socket.emit('listener-join'); }
+  }
+}
+socket.on('radio-config', applyRadioConfig);
+fetch('/api/radio-config').then(r=>r.json()).then(applyRadioConfig).catch(()=>{});
 socket.on('connect', () => {
   if (hostMode && hostPassword) {
     socket.emit('host-login', { password: hostPassword, name: hostName || 'Locutor' });
@@ -26,7 +43,7 @@ socket.on('connect', () => {
 });
 socket.on('connect_error', () => { if (hostMode) setMessage('Conexão instável com o servidor. Tentando reconectar automaticamente…'); });
 socket.on('disconnect', () => { if (hostMode) setMessage('Conexão perdida. Reconectando… mantenha esta página aberta.'); });
-socket.on('now-playing', d => { $('trackTitle').textContent = d.title; $('trackSub').textContent = 'Transmissão ao vivo • GAZETA FM NACIONAL PLAYER'; });
+socket.on('now-playing', d => { $('trackTitle').textContent = d.title; $('trackSub').textContent = 'Transmissão ao vivo • GAZETA FM NACIONAL PLAYER'; if(radioConfig.autoDjEnabled) applyRadioConfig({nowPlaying:d.title}); });
 socket.on('stream-unavailable', () => { $('listenHint').textContent = 'A rádio está offline. Tente novamente quando o locutor entrar no ar.'; });
 socket.on('host-login-result', r => {
   if (!r.ok) { $('loginMessage').textContent = r.message; return; }
@@ -68,7 +85,26 @@ $('closePanel').onclick = () => $('panelModal').classList.add('hidden');
 $('panelModal').onclick = e => { if (e.target === $('panelModal')) $('panelModal').classList.add('hidden'); };
 $('loginBtn').onclick = () => { hostName = $('hostName').value.trim() || 'Locutor'; hostPassword = $('hostPassword').value; socket.emit('host-login', { password: hostPassword, name: hostName }); };
 $('logoutBtn').onclick = async () => { await endLive(); hostMode = false; hostPassword = ''; $('controlView').classList.add('hidden'); $('loginView').classList.remove('hidden'); };
-$('listenBtn').onclick = () => { listenerMode = true; $('listenHint').textContent = 'Conectando à rádio…'; $('remoteAudio').play().catch(() => {}); socket.emit('listener-join'); };
+$('listenBtn').onclick = async () => {
+  listenerMode = true;
+  if (radioConfig.autoDjEnabled && radioConfig.streamUrl) {
+    const a=$('autoDjAudio'); if(a.src!==radioConfig.streamUrl) a.src=radioConfig.streamUrl;
+    try { await a.play(); $('listenHint').textContent='Você está ouvindo a programação automática 24h.'; }
+    catch (_) { $('listenHint').textContent='Não foi possível iniciar o stream. Confira a URL e tente novamente.'; }
+  } else {
+    $('listenHint').textContent = 'Conectando à transmissão ao vivo…';
+    $('remoteAudio').play().catch(() => {}); socket.emit('listener-join');
+  }
+};
+$('saveRadioConfig').onclick = async () => {
+  const msg=$('autoDjMessage'); msg.textContent='Salvando configuração…';
+  try {
+    const r=await fetch('/api/radio-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:hostPassword,streamUrl:$('streamUrlInput').value.trim(),autoDjEnabled:$('autoDjToggle').checked})});
+    const d=await r.json(); if(!r.ok) throw new Error(d.error||'Não foi possível salvar.');
+    applyRadioConfig(d.settings); msg.textContent='Configuração salva.';
+  } catch(e) { msg.textContent='Erro ao salvar: '+e.message+' Entre no painel com sua senha antes de salvar.'; }
+};
+$('autoDjToggle').onchange = () => { if (!radioConfig.streamUrl && $('autoDjToggle').checked) $('autoDjMessage').textContent='Atenção: configure a URL do stream antes de ativar o Auto DJ.'; };
 function connectMaster() {
   if (!audioContext || !masterGain || !mixDestination) return;
   try { masterGain.disconnect(); if (compressor) compressor.disconnect(); } catch (_) {}
@@ -188,3 +224,24 @@ $('stopAudioBtn').onclick = () => { stopAllAudio(); setMessage('Músicas e efeit
 function drawMeter(analyser, fillId, valueId) { if (!analyser) return; const data = new Uint8Array(analyser.frequencyBinCount); analyser.getByteTimeDomainData(data); let sum = 0; for (const v of data) { const n = (v - 128) / 128; sum += n * n; } const rms = Math.sqrt(sum / data.length); const percent = Math.min(100, Math.max(0, Math.round(rms * 240))); $(fillId).style.width = percent + '%'; $(valueId).textContent = percent < 3 ? 'Sem sinal' : percent + '%'; }
 function startMeters() { if (meterFrame) cancelAnimationFrame(meterFrame); const loop = () => { if (!audioContext) return; drawMeter(musicAnalyser, 'musicMeterFill', 'musicMeterValue'); drawMeter(voiceAnalyser, 'voiceMeterFill', 'voiceMeterValue'); drawMeter(effectAnalyser, 'effectMeterFill', 'effectMeterValue'); meterFrame = requestAnimationFrame(loop); }; loop(); }
 window.addEventListener('beforeunload', () => { if (hostMode) socket.emit('go-offline'); });
+
+// Recursos públicos: chat, pedidos de música e arte da programação.
+const siteMenu = $('siteMenu');
+$('menuBtn').onclick = () => siteMenu.classList.toggle('hidden');
+$('menuPanel').onclick = () => { siteMenu.classList.add('hidden'); $('openPanel').click(); };
+$('menuChat').onclick = () => { siteMenu.classList.add('hidden'); $('chatSection').scrollIntoView({behavior:'smooth'}); };
+$('menuRequest').onclick = () => { siteMenu.classList.add('hidden'); $('requestSection').scrollIntoView({behavior:'smooth'}); };
+$('menuSchedule').onclick = () => { siteMenu.classList.add('hidden'); $('scheduleSection').classList.remove('hidden'); $('scheduleSection').scrollIntoView({behavior:'smooth'}); socket.emit('schedule-image'); };
+function renderChatLine(box,m) { if(!box)return; const empty=box.querySelector('.empty'); if(empty)empty.remove(); const row=document.createElement('div'); row.className='chat-line'; const who=document.createElement('b'); who.textContent=m.name+': '; const msg=document.createElement('span'); msg.textContent=m.text; row.append(who,msg); box.append(row); while(box.children.length>60)box.firstChild.remove(); box.scrollTop=box.scrollHeight; }
+function addChatMessage(m) { renderChatLine($('chatMessages'),m); renderChatLine($('hostChatMessages'),m); }
+socket.on('chat-message',addChatMessage);
+socket.on('song-request',m=>{if(!$('hostRequests'))return;const box=$('hostRequests');const empty=box.querySelector('.empty');if(empty)box.innerHTML='';const row=document.createElement('div');row.className='file-row';row.dataset.requestId=m.id;const name=document.createElement('span');name.className='file-name';name.textContent=m.by+' pediu: '+m.name;const download=document.createElement('a');download.href=m.url;download.download=m.name;download.textContent='Baixar';download.className='request-download';const remove=document.createElement('button');remove.className='remove';remove.textContent='Concluir';remove.onclick=()=>{socket.emit('delete-song-request',{id:m.id});row.remove();if(!box.children.length)box.innerHTML='<p class="empty">Nenhum pedido recebido ainda.</p>';};row.append(name,download);if(hostMode)row.append(remove);box.append(row);});
+socket.on('song-request-removed',d=>{const row=document.querySelector('[data-request-id="'+CSS.escape(d.id)+'"]');if(row)row.remove();});
+function setSchedule(item){if(!item||!item.url)return;$('scheduleImage').src=item.url;$('scheduleImage').classList.remove('hidden');$('scheduleEmpty').classList.add('hidden');$('scheduleSection').classList.remove('hidden');}
+socket.on('schedule-image',setSchedule);
+$('chatForm').onsubmit=e=>{e.preventDefault();const text=$('chatText').value.trim();if(!text)return;socket.emit('chat-message',{name:$('chatName').value.trim()||'Ouvinte',text});$('chatText').value='';};
+$('requestForm').onsubmit=async e=>{e.preventDefault();const file=$('requestFile').files[0];if(!file)return;const msg=$('requestMessage');msg.textContent='Enviando arquivo…';try{const fd=new FormData();fd.append('song',file);fd.append('name',$('requestName').value.trim()||'Ouvinte');const r=await fetch('/api/upload-song',{method:'POST',body:fd});const data=await r.json();if(!r.ok)throw new Error(data.error||'Falha no envio');msg.textContent='Pedido enviado! O locutor já pode baixar o arquivo.';$('requestFile').value='';}catch(err){msg.textContent='Não foi possível enviar: '+err.message;}};
+$('scheduleFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;const msg=$('scheduleUploadMessage');if(!hostMode||!hostPassword){msg.textContent='Somente o administrador autenticado no painel pode publicar a programação.';e.target.value='';return;}msg.textContent='Enviando imagem…';try{const fd=new FormData();fd.append('password',hostPassword);fd.append('image',file);const r=await fetch('/api/upload-schedule',{method:'POST',body:fd});const data=await r.json();if(!r.ok)throw new Error(data.error||'Falha no envio');setSchedule(data.item);msg.textContent='Imagem publicada para os ouvintes.';}catch(err){msg.textContent='Não foi possível publicar: '+err.message;}e.target.value='';};
+fetch('/api/public-data').then(r=>r.json()).then(data=>{(data.chatHistory||[]).forEach(addChatMessage);(data.requestHistory||[]).forEach(m=>{const already=document.querySelector('[data-request-id="'+CSS.escape(m.id)+'"]');if(!already){const box=$('hostRequests');if(box.querySelector('.empty'))box.innerHTML='';const row=document.createElement('div');row.className='file-row';row.dataset.requestId=m.id;const n=document.createElement('span');n.className='file-name';n.textContent=m.by+' pediu: '+m.name;const a=document.createElement('a');a.href=m.url;a.download=m.name;a.className='request-download';a.textContent='Baixar';row.append(n,a);box.append(row);}});if(data.scheduleImage)setSchedule(data.scheduleImage);}).catch(()=>{});
+const originalLoginHandler = $('loginBtn').onclick;
+$('loginBtn').onclick = async () => { hostPassword=$('hostPassword').value; hostName=$('hostName').value.trim()||'Locutor'; if(originalLoginHandler) await originalLoginHandler(); };
